@@ -64,14 +64,31 @@ if uploaded_file is not None:
             
             st.session_state.vectorstore = vectorstore
             st.success("Document processed successfully!")
+    # 6. The Chat Interface (With Memory!)
+    
+    # Create a place in memory to store the chat history
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
 
-    # 6. The Question Box
-    query = st.text_input("Ask a question about your PDF:")
+    # Display all the previous chat messages on the screen
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
 
-    if query:
+    # Create the chat input box at the bottom
+    if query := st.chat_input("Ask a question about your PDF..."):
+        
+        # 1. Save the user's question to memory and display it
+        st.session_state.messages.append({"role": "user", "content": query})
+        with st.chat_message("user"):
+            st.markdown(query)
+
+        # 2. Generate the AI's answer
         with st.spinner("Thinking..."):
+            # Get the librarian (Retriever) from memory
             retriever = st.session_state.vectorstore.as_retriever(search_kwargs={"k": 5})
             
+            # The Prompt Template
             template = """You are a helpful assistant. Answer the question using ONLY the following context. 
             If the answer is not in the context, say "I don't know based on the document." Do not make up information.
             Be precise and detailed in your answer.
@@ -83,6 +100,7 @@ if uploaded_file is not None:
             """
             prompt = ChatPromptTemplate.from_template(template)
 
+            # The Pipeline
             rag_chain = (
                 {"context": retriever, "query": RunnablePassthrough()}
                 | prompt
@@ -90,10 +108,15 @@ if uploaded_file is not None:
                 | StrOutputParser()
             )
 
+            # Run the pipeline
             answer = rag_chain.invoke(query)
-            st.write("### Answer:")
-            st.info(answer)
             
+            # 3. Save the AI's answer to memory and display it
+            st.session_state.messages.append({"role": "assistant", "content": answer})
+            with st.chat_message("assistant"):
+                st.markdown(answer)
+
+            # 4. Show the sources (which pages it read)
             with st.expander("See the exact pages I read to find this"):
                 docs = retriever.invoke(query)
                 for doc in docs:
