@@ -2,7 +2,7 @@ import streamlit as st
 import os
 import tempfile
 from dotenv import load_dotenv
-
+from flashrank import Ranker
 # The LangChain tools we installed
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
