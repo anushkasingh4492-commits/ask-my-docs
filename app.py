@@ -12,7 +12,8 @@ from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
-
+from langchain_classic.retrievers import ContextualCompressionRetriever
+from langchain_classic.retrievers.document_compressors import FlashrankRerank
 # 1. Load the API key securely
 groq_api_key = None
 
@@ -86,7 +87,14 @@ if uploaded_file is not None:
         # 2. Generate the AI's answer
         with st.spinner("Thinking..."):
             # Get the librarian (Retriever) from memory
-            retriever = st.session_state.vectorstore.as_retriever(search_kwargs={"k": 5})
+            # 1. Grab 15 chunks (The Junior Librarian)
+            base_retriever = st.session_state.vectorstore.as_retriever(search_kwargs={"k": 15})
+            
+            # 2. Rerank them and pick the top 3 (The Senior Librarian)
+            compressor = FlashrankRerank(top_n=3)
+            retriever = ContextualCompressionRetriever(
+                base_compressor=compressor, base_retriever=base_retriever
+            )
             
             # The Prompt Template
             template = """You are a helpful assistant. Answer the question using ONLY the following context. 
