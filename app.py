@@ -14,6 +14,10 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 from langchain_classic.retrievers import ContextualCompressionRetriever
 from langchain_classic.retrievers.document_compressors import FlashrankRerank
+from langchain_classic.chains import create_history_aware_retriever, create_retrieval_chain
+from langchain_classic.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.prompts import MessagesPlaceholder
+from langchain_core.messages import HumanMessage, AIMessage
 # 1. Load the API key securely
 groq_api_key = None
 
@@ -86,43 +90,75 @@ if uploaded_file is not None:
 
         # 2. Generate the AI's answer
         with st.spinner("Thinking..."):
-            # Get the librarian (Retriever) from memory
-            # 1. Grab 15 chunks (The Junior Librarian)
+            # 1. The Retriever (with Reranking)
             base_retriever = st.session_state.vectorstore.as_retriever(search_kwargs={"k": 15})
-            
-            # 2. Rerank them and pick the top 3 (The Senior Librarian)
             compressor = FlashrankRerank(top_n=3)
             retriever = ContextualCompressionRetriever(
                 base_compressor=compressor, base_retriever=base_retriever
             )
+
+            # 2. Tell the AI how to handle follow-up questions
+            contextualize_q_system_prompt = """Given a chat history and the latest user question \
+            which might reference context in the chat history, formulate a standalone question \
+            which can be understood without the chat history. Do NOT answer the question, \
+            just reformulate it if needed and otherwise return it as is."""
             
-            # The Prompt Template
-            template = """You are a helpful assistant. Answer the question using ONLY the following context. 
+            contextualize_q_prompt = ChatPromptTemplate.from_messages(
+                [
+                    ("system", contextualize_q_system_prompt),
+                    MessagesPlaceholder("chat_history"),
+                    ("human", "{input}"),
+                ]
+            )
+            
+            history_aware_retriever = create_history_aware_retriever(
+                llm, retriever, contextualize_q_prompt
+            )
+
+            # 3. Tell the AI how to answer the question using the document
+            qa_system_prompt = """You are a helpful assistant. Answer the question using ONLY the following context. 
             If the answer is not in the context, say "I don't know based on the document." Do not make up information.
             Be precise and detailed in your answer.
 
             Context:
-            {context}
-
-            Question: {query}
-            """
-            prompt = ChatPromptTemplate.from_template(template)
-
-            # The Pipeline
-            rag_chain = (
-                {"context": retriever, "query": RunnablePassthrough()}
-                | prompt
-                | llm
-                | StrOutputParser()
+            {context}"""
+            
+            qa_prompt = ChatPromptTemplate.from_messages(
+                [
+                    ("system", qa_system_prompt),
+                    MessagesPlaceholder("chat_history"),
+                    ("human", "{input}"),
+                ]
             )
 
-            # Run the pipeline
-            answer = rag_chain.invoke(query)
+            # 4. Build the final RAG Chain
+            question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
+            rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
+
+            # 5. Convert Streamlit memory to LangChain memory format
+            chat_history = []
+            for msg in st.session_state.messages[:-1]: # Get all messages EXCEPT the one we just asked
+                if msg["role"] == "user":
+                    chat_history.append(HumanMessage(content=msg["content"]))
+                elif msg["role"] == "assistant":
+                    chat_history.append(AIMessage(content=msg["content"]))
+
+            # 6. Run the pipeline!
+            result = rag_chain.invoke({"input": query, "chat_history": chat_history})
+            answer = result["answer"]
             
-            # 3. Save the AI's answer to memory and display it
+            # 7. Save the answer to memory and display it
             st.session_state.messages.append({"role": "assistant", "content": answer})
             with st.chat_message("assistant"):
                 st.markdown(answer)
+
+            # 8. Show the sources
+            with st.expander("See the exact pages I read to find this"):
+                for doc in result["context"]:
+                    page_num = doc.metadata.get("page", "Unknown")
+                    st.write(f"**Page {page_num + 1}:**")
+                    st.write(doc.page_content)
+                    st.write("---")
 
             # 4. Show the sources (which pages it read)
             with st.expander("See the exact pages I read to find this"):
